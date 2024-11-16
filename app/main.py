@@ -12,15 +12,6 @@ models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
-# Add CORS middleware configuration
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allows all source
-    allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
-)
-
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 @app.post("/register", response_model=schemas.User)
