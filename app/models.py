@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, JSON, Text
 from sqlalchemy.orm import relationship
-from datetime import datetime
+from datetime import datetime, timezone
 from .database import Base
 
 class User(Base):
@@ -18,7 +18,7 @@ class Category(Base):
     name = Column(String, unique=True, index=True)
     description = Column(Text)
     priority = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.datetime.now(datetime.UTC))
+    created_at = Column(DateTime, default=datetime.now(timezone.utc))
     created_by = Column(String, ForeignKey("users.username"))
 
     # Relationship
@@ -30,7 +30,7 @@ class Card(Base):
     id = Column(Integer, primary_key=True, index=True)
     front = Column(Text)  # HTML string
     back = Column(Text)   # HTML string
-    created_at = Column(DateTime, default=datetime.datetime.now(datetime.UTC))
+    created_at = Column(DateTime, default=datetime.now(timezone.utc))
     username = Column(String, ForeignKey("users.username"))
     study_count = Column(Integer, default=0)
     next_study = Column(DateTime)
