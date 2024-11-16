@@ -1,8 +1,8 @@
 from fastapi import FastAPI, Depends, HTTPException, status, Query
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
-from . import models, schemas, auth
-from .database import engine, get_db
+from app import models, schemas, auth
+from app.database import engine, get_db
 from datetime import timedelta, datetime, timezone
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
