@@ -38,7 +38,7 @@ def test_user():
     user_data = {
         "email": "test@example.com",
         "username": "testuser",
-        "password": "testpassword"
+        "password": "TestPassword123",
     }
     return user_data
 
@@ -47,11 +47,12 @@ def test_token(test_user):
     # Register user
     client.post("/register", json=test_user)
     
-    # Login and get token
-    response = client.post("/token", data={
+    # Login and get token using JSON
+    login_data = {
         "username": test_user["username"],
         "password": test_user["password"]
-    })
+    }
+    response = client.post("/token", json=login_data)  # Changed from data to json
     return response.json()["access_token"]
 
 @pytest.fixture
@@ -60,6 +61,7 @@ def auth_headers(test_token):
 
 def test_register_user(test_user):
     response = client.post("/register", json=test_user)
+    print(response.json())
     assert response.status_code == 200
     data = response.json()
     assert data["email"] == test_user["email"]
@@ -69,13 +71,18 @@ def test_login(test_user):
     # First register
     client.post("/register", json=test_user)
     
-    # Then login
-    response = client.post("/token", data={
+    # Then login with JSON instead of form data
+    login_data = {
         "username": test_user["username"],
         "password": test_user["password"]
-    })
+    }
+    response = client.post("/token", json=login_data)  # Changed from data to json
     assert response.status_code == 200
-    assert "access_token" in response.json()
+    data = response.json()
+    assert "access_token" in data
+    assert "user" in data
+    assert data["user"]["username"] == test_user["username"]
+    assert data["user"]["email"] == test_user["email"]
 
 def test_create_category(auth_headers):
     category_data = {

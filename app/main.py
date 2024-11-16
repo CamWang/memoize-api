@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException, status, Query
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.security import OAuth2PasswordBearer
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app import models, schemas, auth
 from app.database import engine, get_db
@@ -13,6 +14,11 @@ models.Base.metadata.create_all(bind=engine)
 app = FastAPI()
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+# Add new schema for login request
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 
 @app.post("/register", response_model=schemas.User)
 def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
@@ -36,12 +42,12 @@ def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
             detail="Username already taken"
         )
     
-    # Additional password validation
-    if not any(c.isupper() for c in user.password):
+    if len(user.password) < 8:
         raise HTTPException(
             status_code=400,
-            detail="Password must contain at least one uppercase letter"
+            detail="Password must be at least 8 characters long"
         )
+    
     if not any(c.islower() for c in user.password):
         raise HTTPException(
             status_code=400,
@@ -58,20 +64,21 @@ def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     db_user = models.User(
         email=user.email,
         username=user.username,
-        hashed_password=hashed_password
+        hashed_password=hashed_password,
+        created_at=datetime.now(timezone.utc)
     )
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
     return db_user
 
-@app.post("/token", response_model=schemas.Token)
+@app.post("/token", response_model=schemas.TokenResponse)
 async def login(
-    form_data: OAuth2PasswordRequestForm = Depends(),
+    login_data: LoginRequest,  # Changed from OAuth2PasswordRequestForm
     db: Session = Depends(get_db)
 ):
     user = db.query(models.User).filter(
-        models.User.username == form_data.username
+        models.User.username == login_data.username  # Changed from form_data to login_data
     ).first()
     if not user:
         raise HTTPException(
@@ -79,7 +86,7 @@ async def login(
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    if not auth.verify_password(form_data.password, user.hashed_password):
+    if not auth.verify_password(login_data.password, user.hashed_password):  # Changed from form_data to login_data
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
