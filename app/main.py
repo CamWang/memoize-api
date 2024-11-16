@@ -6,6 +6,7 @@ from app.database import engine, get_db
 from datetime import timedelta, datetime, timezone
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
+import re
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -24,14 +25,41 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 @app.post("/register", response_model=schemas.User)
 def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
-    # Check if user exists
-    db_user = db.query(models.User).filter(
+    # Check if email already exists
+    db_user_email = db.query(models.User).filter(
         models.User.email == user.email
     ).first()
-    if db_user:
+    if db_user_email:
         raise HTTPException(
             status_code=400,
             detail="Email already registered"
+        )
+    
+    # Check if username already exists
+    db_user_username = db.query(models.User).filter(
+        models.User.username == user.username
+    ).first()
+    if db_user_username:
+        raise HTTPException(
+            status_code=400,
+            detail="Username already taken"
+        )
+    
+    # Additional password validation
+    if not any(c.isupper() for c in user.password):
+        raise HTTPException(
+            status_code=400,
+            detail="Password must contain at least one uppercase letter"
+        )
+    if not any(c.islower() for c in user.password):
+        raise HTTPException(
+            status_code=400,
+            detail="Password must contain at least one lowercase letter"
+        )
+    if not any(c.isdigit() for c in user.password):
+        raise HTTPException(
+            status_code=400,
+            detail="Password must contain at least one number"
         )
     
     # Create new user
@@ -46,7 +74,7 @@ def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     db.refresh(db_user)
     return db_user
 
-@app.post("/token")
+@app.post("/token", response_model=schemas.Token)
 async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db)
@@ -71,7 +99,18 @@ async def login(
     access_token = auth.create_access_token(
         data={"sub": user.username}, expires_delta=access_token_expires
     )
-    return {"access_token": access_token, "token_type": "bearer"} 
+    
+    # Return token and user information
+    return {
+        "access_token": access_token, 
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "created_at": user.created_at
+        }
+    }
 
 # Category endpoints
 @app.post("/categories/", response_model=schemas.Category)
