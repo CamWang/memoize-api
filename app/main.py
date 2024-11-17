@@ -8,6 +8,7 @@ from datetime import timedelta, datetime, timezone
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 import re
+from jose import JWTError, ExpiredSignatureError
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -15,7 +16,6 @@ app = FastAPI()
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-# Add new schema for login request
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -110,16 +110,41 @@ async def login(
         }
     }
 
+async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = auth.verify_token(token)
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+    except ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has expired",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except JWTError:
+        raise credentials_exception
+    
+    user = db.query(models.User).filter(models.User.username == username).first()
+    if user is None:
+        raise credentials_exception
+    return user
+
 # Category endpoints
 @app.post("/categories/", response_model=schemas.Category)
 def create_category(
     category: schemas.CategoryCreate,
     db: Session = Depends(get_db),
-    current_user: str = Depends(oauth2_scheme)
+    current_user: models.User = Depends(get_current_user)
 ):
     db_category = models.Category(
         **category.model_dump(),
-        created_by=current_user
+        created_by=current_user.username
     )
     db.add(db_category)
     db.commit()
@@ -131,7 +156,7 @@ def list_categories(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
-    current_user: str = Depends(oauth2_scheme)
+    current_user: models.User = Depends(get_current_user)
 ):
     categories = db.query(models.Category).offset(skip).limit(limit).all()
     return categories
@@ -141,7 +166,7 @@ def list_categories(
 def create_card(
     card: schemas.CardCreate,
     db: Session = Depends(get_db),
-    current_user: str = Depends(oauth2_scheme)
+    current_user: models.User = Depends(get_current_user)
 ):
     # Verify category exists
     category = db.query(models.Category).filter(models.Category.id == card.category_id).first()
@@ -150,7 +175,7 @@ def create_card(
     
     db_card = models.Card(
         **card.dict(),
-        username=current_user,
+        username=current_user.username,
         next_study=datetime.now(timezone.utc) + timedelta(days=1)  # Default to tomorrow
     )
     db.add(db_card)
@@ -165,9 +190,9 @@ def list_cards(
     category_id: Optional[int] = None,
     tag: Optional[str] = None,
     db: Session = Depends(get_db),
-    current_user: str = Depends(oauth2_scheme)
+    current_user: models.User = Depends(get_current_user)
 ):
-    query = db.query(models.Card).filter(models.Card.username == current_user)
+    query = db.query(models.Card).filter(models.Card.username == current_user.username)
     
     if category_id:
         query = query.filter(models.Card.category_id == category_id)
@@ -183,11 +208,11 @@ def update_card(
     card_id: int,
     card_update: schemas.CardUpdate,
     db: Session = Depends(get_db),
-    current_user: str = Depends(oauth2_scheme)
+    current_user: models.User = Depends(get_current_user)
 ):
     db_card = db.query(models.Card).filter(
         models.Card.id == card_id,
-        models.Card.username == current_user
+        models.Card.username == current_user.username
     ).first()
     
     if not db_card:
@@ -205,11 +230,11 @@ def update_card(
 def delete_card(
     card_id: int,
     db: Session = Depends(get_db),
-    current_user: str = Depends(oauth2_scheme)
+    current_user: models.User = Depends(get_current_user)
 ):
     db_card = db.query(models.Card).filter(
         models.Card.id == card_id,
-        models.Card.username == current_user
+        models.Card.username == current_user.username
     ).first()
     
     if not db_card:
@@ -224,11 +249,11 @@ def record_study(
     card_id: int,
     success: bool = Query(..., description="Whether the study was successful"),
     db: Session = Depends(get_db),
-    current_user: str = Depends(oauth2_scheme)
+    current_user: models.User = Depends(get_current_user)
 ):
     db_card = db.query(models.Card).filter(
         models.Card.id == card_id,
-        models.Card.username == current_user
+        models.Card.username == current_user.username
     ).first()
     
     if not db_card:
