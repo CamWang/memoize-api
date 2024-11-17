@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, status, Query
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from app import models, schemas, auth
 from app.database import engine, get_db
 from datetime import timedelta, datetime, timezone
@@ -176,32 +176,57 @@ def create_card(
     db_card = models.Card(
         **card.dict(),
         username=current_user.username,
-        next_study=datetime.now(timezone.utc) + timedelta(days=1)  # Default to tomorrow
+        next_study=datetime.now(timezone.utc)
     )
     db.add(db_card)
     db.commit()
     db.refresh(db_card)
     return db_card
 
-@app.get("/cards/", response_model=List[schemas.Card])
-def list_cards(
-    skip: int = 0,
-    limit: int = 100,
+@app.get("/cards/")
+async def list_cards(
+    study: bool = False,
     category_id: Optional[int] = None,
     tag: Optional[str] = None,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    skip: int = 0,
+    limit: int = 100,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
-    query = db.query(models.Card).filter(models.Card.username == current_user.username)
+    # Start with base query
+    base_query = db.query(models.Card).filter(models.Card.username == current_user.username)
     
     if category_id:
-        query = query.filter(models.Card.category_id == category_id)
+        base_query = base_query.filter(models.Card.category_id == category_id)
     
     if tag:
-        query = query.filter(models.Card.tags.contains([tag]))
+        base_query = base_query.filter(models.Card.tags.contains([tag]))
     
-    cards = query.offset(skip).limit(limit).all()
-    return cards
+    if study:
+        # For study mode, order by next_study date, putting NULL dates last
+        base_query = base_query.order_by(
+            # This will put NULL values last
+            models.Card.next_study.is_(None).asc(),
+            models.Card.next_study.asc()
+        )
+    
+    # Apply pagination
+    results = base_query.offset(skip).limit(limit).all()
+    
+    # Manually load categories to avoid the joinedload issue
+    category_ids = {card.category_id for card in results}
+    categories = {
+        cat.id: cat 
+        for cat in db.query(models.Category)
+        .filter(models.Category.id.in_(category_ids))
+        .all()
+    }
+    
+    # Manually set the category relationship
+    for card in results:
+        card.category = categories.get(card.category_id)
+    
+    return results
 
 @app.put("/cards/{card_id}", response_model=schemas.Card)
 def update_card(
@@ -247,10 +272,15 @@ def delete_card(
 @app.post("/cards/{card_id}/study")
 def record_study(
     card_id: int,
-    success: bool = Query(..., description="Whether the study was successful"),
+    study_data: dict,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
+    if "success" not in study_data:
+        raise HTTPException(status_code=400, detail="success field is required")
+    
+    success = study_data["success"]
+    
     db_card = db.query(models.Card).filter(
         models.Card.id == card_id,
         models.Card.username == current_user.username
@@ -259,25 +289,24 @@ def record_study(
     if not db_card:
         raise HTTPException(status_code=404, detail="Card not found")
     
-    # Increment study count
+    # Increment study count before calculating next study date
     db_card.study_count += 1
     
     now = datetime.now(timezone.utc)
     
-    # Update next study time based on success
-    if success:
-        # Simple spaced repetition: double the interval each time
-        if db_card.next_study:
-            # Ensure next_study is timezone-aware before subtraction
-            next_study = db_card.next_study.replace(tzinfo=timezone.utc) if db_card.next_study.tzinfo is None else db_card.next_study
-            current_interval = (next_study - now).days
-        else:
-            current_interval = 1
-        next_interval = max(1, current_interval * 2)
-        db_card.next_study = now + timedelta(days=next_interval)
+    # Calculate next study date
+    if not success or db_card.study_count == 1:
+        # For first study or unsuccessful attempts, schedule for beginning of next day
+        next_day = (now + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        db_card.next_study = next_day
     else:
-        # If failed, review tomorrow
-        db_card.next_study = now + timedelta(days=1)
+        # For successful subsequent studies
+        from random import randint
+        days_multiplier = randint(3, 5)
+        next_interval = min((db_card.study_count - 1) * days_multiplier, 30)  # Cap at 30 days
+        db_card.next_study = now + timedelta(days=next_interval)
     
     db.commit()
     return {"message": "Study recorded successfully"} 

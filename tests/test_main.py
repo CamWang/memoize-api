@@ -2,7 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json
 
 from app.main import app
@@ -134,23 +134,121 @@ def test_list_cards(auth_headers):
     # Create a category and multiple cards
     category = test_create_category(auth_headers)
     
+    # Create cards with different next_study dates
     cards = [
         {
-            "front": f"<p>Front {i}</p>",
-            "back": f"<p>Back {i}</p>",
-            "tags": ["test"],
-            "category_id": category["id"]
+            "front": f"Front {i}",
+            "back": f"Back {i}",
+            "category_id": category["id"],
+            "tags": [f"tag{i}"]
         }
         for i in range(3)
     ]
     
+    created_cards = []
     for card in cards:
-        client.post("/cards/", json=card, headers=auth_headers)
+        response = client.post("/cards/", json=card, headers=auth_headers)
+        assert response.status_code == 200
+        created_cards.append(response.json())
     
+    # Test default listing (no study parameter)
     response = client.get("/cards/", headers=auth_headers)
     assert response.status_code == 200
-    data = response.json()
-    assert len(data) == 3
+    assert len(response.json()) == 3
+    
+    # Test pagination
+    response = client.get("/cards/?limit=2", headers=auth_headers)
+    assert response.status_code == 200
+    assert len(response.json()) == 2
+    
+    response = client.get("/cards/?skip=2&limit=2", headers=auth_headers)
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+
+def test_list_cards_study_order(auth_headers):
+    # Create a category
+    category = test_create_category(auth_headers)
+    
+    # Create cards with different study dates
+    cards = [
+        {
+            "front": f"Front {i}",
+            "back": f"Back {i}",
+            "category_id": category["id"],
+            "tags": [f"tag{i}"]
+        }
+        for i in range(4)
+    ]
+    
+    created_cards = []
+    for card in cards:
+        response = client.post("/cards/", json=card, headers=auth_headers)
+        assert response.status_code == 200
+        created_cards.append(response.json())
+        
+    print(json.dumps(created_cards, indent=2))
+    print("--------------------------------")
+        
+    # Card 0: First time study success (should be tomorrow)
+    client.post(
+        f"/cards/{created_cards[0]['id']}/study",
+        json={"success": True},
+        headers=auth_headers
+    )
+    
+    # Card 1: First time study fail (should be tomorrow)
+    client.post(
+        f"/cards/{created_cards[1]['id']}/study",
+        json={"success": False},
+        headers=auth_headers
+    )
+    
+    # Card 2: Study twice with success (should be 3-5 days later)
+    client.post(
+        f"/cards/{created_cards[2]['id']}/study",
+        json={"success": True},
+        headers=auth_headers
+    )
+    # Second study for card 2
+    client.post(
+        f"/cards/{created_cards[2]['id']}/study",
+        json={"success": True},
+        headers=auth_headers
+    )
+    
+    # Card 3: Leave unstudied (no next_study date)
+    
+    # Test study ordering
+    response = client.get("/cards/?study=true", headers=auth_headers)
+    assert response.status_code == 200
+    cards = response.json()
+    assert len(cards) == 4
+    
+    print(json.dumps(cards, indent=2))
+    
+    now = datetime.now(timezone.utc)
+    
+    # First two cards (first-time studied) should be scheduled for tomorrow at 00:00
+    next_day = (now + timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc
+    )
+    
+    # Check first card, didn't study yet\
+    assert created_cards[3]['id'] == cards[0]['id']
+    
+    # Check first card (success on first try)
+    first_card_next_study = datetime.fromisoformat(cards[1]["next_study"].replace('Z', '+00:00')).replace(tzinfo=timezone.utc)
+    assert first_card_next_study == next_day
+    
+    # Check second card (fail on first try)
+    second_card_next_study = datetime.fromisoformat(cards[2]["next_study"].replace('Z', '+00:00')).replace(tzinfo=timezone.utc)
+    assert second_card_next_study == next_day
+    
+    # Check third card (success on second try)
+    third_card_next_study = datetime.fromisoformat(cards[3]["next_study"].replace('Z', '+00:00')).replace(tzinfo=timezone.utc) + timedelta(minutes=5) # compensate for test execution time
+    days_diff = (third_card_next_study - now).days
+    assert 3 <= days_diff <= 5  # Should be scheduled 3-5 days away since study_count=2
+
 
 def test_update_card(auth_headers):
     # Create a card first
@@ -191,10 +289,11 @@ def test_study_card(auth_headers):
     # Create a card first
     card = test_create_card(auth_headers)
     
-    # Record successful study
+    # Record successful study using JSON
+    study_data = {"success": True}
     response = client.post(
         f"/cards/{card['id']}/study",
-        params={"success": True},
+        json=study_data,  # Changed from params to json
         headers=auth_headers
     )
     assert response.status_code == 200

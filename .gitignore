@@ -29,6 +29,9 @@ ENV/
 env.bak/
 venv.bak/
 
+# Ignore pycache
+__pycache__/
+
 # IDE
 .idea/
 .vscode/
